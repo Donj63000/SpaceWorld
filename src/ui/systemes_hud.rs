@@ -3,7 +3,7 @@ use bevy::ui::{ComputedNode, UiGlobalTransform};
 use bevy::window::PrimaryWindow;
 
 use crate::colony::{
-    Astronaut, AstronautePromeneur, LifeSupportState, StructureState, TaskBoard,
+    Astronaut, AstronautePromeneur, LifeSupportState, ProfilAstronaute, StructureState, TaskBoard,
 };
 use crate::construction::{
     BlocageConstructionParUi, EtatConnexionPlacement, PlacementFeedback, SelectedBuild,
@@ -20,8 +20,8 @@ use super::presentation_hud::{
 };
 use super::references_hud::{
     CadenceHudEquipage, MemoireHudMission, RacineHud, ReferencesAlertesHud,
-    ReferencesConstructionHud, ReferencesEquipageHud, ReferencesMissionHud,
-    ReferencesReseauxHud, ZoneCaptureCurseurUi,
+    ReferencesConstructionHud, ReferencesEquipageHud, ReferencesMissionHud, ReferencesReseauxHud,
+    ZoneCaptureCurseurUi,
 };
 use super::theme_cockpit as theme;
 
@@ -146,11 +146,7 @@ pub(crate) fn rafraichir_hud_mission_reseaux(
             oxygene_stocke, oxygene_capacite
         ),
     );
-    remplacer_largeur_barre(
-        &mut noeuds,
-        references_mission.barre_oxygene,
-        ratio_oxygene,
-    );
+    remplacer_largeur_barre(&mut noeuds, references_mission.barre_oxygene, ratio_oxygene);
     remplacer_fond(
         &mut fonds,
         references_mission.barre_oxygene,
@@ -203,11 +199,7 @@ pub(crate) fn rafraichir_hud_mission_reseaux(
             energie_generation, energie_demande
         ),
     );
-    remplacer_largeur_barre(
-        &mut noeuds,
-        references_reseaux.barre_energie,
-        ratio_energie,
-    );
+    remplacer_largeur_barre(&mut noeuds, references_reseaux.barre_energie, ratio_energie);
     remplacer_fond(
         &mut fonds,
         references_reseaux.barre_energie,
@@ -217,13 +209,12 @@ pub(crate) fn rafraichir_hud_mission_reseaux(
     remplacer_texte(
         &mut textes,
         references_reseaux.libelle_glace,
-        format!("Reserves de glace : {:.0} / {:.0}", glace_stockee, glace_capacite),
+        format!(
+            "Reserves de glace : {:.0} / {:.0}",
+            glace_stockee, glace_capacite
+        ),
     );
-    remplacer_largeur_barre(
-        &mut noeuds,
-        references_reseaux.barre_glace,
-        ratio_glace,
-    );
+    remplacer_largeur_barre(&mut noeuds, references_reseaux.barre_glace, ratio_glace);
     remplacer_fond(
         &mut fonds,
         references_reseaux.barre_glace,
@@ -301,8 +292,8 @@ pub(crate) fn rafraichir_hud_equipage(
     time: Res<Time>,
     perf: Res<ParametresPerformanceJeu>,
     police: Res<PoliceInterface>,
-    astronauts: Query<&Astronaut>,
-    promeneurs: Query<&AstronautePromeneur>,
+    astronauts: Query<(&Astronaut, Option<&ProfilAstronaute>)>,
+    promeneurs: Query<(&AstronautePromeneur, Option<&ProfilAstronaute>)>,
     enfants: Query<&Children>,
     references: Res<ReferencesEquipageHud>,
     mut cadence: ResMut<CadenceHudEquipage>,
@@ -328,8 +319,15 @@ pub(crate) fn rafraichir_hud_equipage(
         }
     }
 
-    let mut cartes = astronauts.iter().map(carte_astronaut).collect::<Vec<_>>();
-    cartes.extend(promeneurs.iter().map(carte_promeneur));
+    let mut cartes = astronauts
+        .iter()
+        .map(|(astronaut, profil)| carte_astronaut(astronaut, profil))
+        .collect::<Vec<_>>();
+    cartes.extend(
+        promeneurs
+            .iter()
+            .map(|(promeneur, profil)| carte_promeneur(promeneur, profil)),
+    );
     trier_cartes(&mut cartes);
 
     commands

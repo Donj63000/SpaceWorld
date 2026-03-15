@@ -7,6 +7,7 @@ use super::super::astronautes::{AnimationOuvrier, CibleMondeLisse, PositionMonde
 use super::super::{
     AnimationPromenade, Astronaut, AstronautStatus, AstronautePromeneur, ColonyVisualAssets,
     EtatPromenade, GridPosition, PositionMonde, StructureKind, StructureState, ZoneRechargeBase,
+    profil_promeneur_par_defaut,
 };
 use super::donnees::{
     AstronauteDebarquement, COULEUR_AMBIANTE_INTRO, COULEUR_AMBIANTE_JEU, COULEUR_CIEL_INTRO,
@@ -295,7 +296,8 @@ pub(crate) fn piloter_arrivee_initiale(
             break;
         }
 
-        let cible_monde = footprint_center(&[data.position_finale], contexte.profile.cell_size_meters);
+        let cible_monde =
+            footprint_center(&[data.position_finale], contexte.profile.cell_size_meters);
         let origine_monde = sequence.point_sortie + data.decalage_sortie;
         let orientation = (cible_monde - origine_monde)
             .x
@@ -310,6 +312,7 @@ pub(crate) fn piloter_arrivee_initiale(
                 status: AstronautStatus::Moving,
                 carrying_ice: 0.0,
             },
+            data.profil,
             GridPosition(data.position_finale),
             PositionMondeLisse(origine_monde),
             CibleMondeLisse(cible_monde),
@@ -334,6 +337,7 @@ pub(crate) fn piloter_arrivee_initiale(
                 compteur_promenade: 0,
                 pause_restante: 0.0,
             },
+            profil_promeneur_par_defaut(super::super::AstronautId(10), "Mila"),
             PositionMonde(sequence.position_mila),
             AnimationPromenade::default(),
             Name::new("Astronaute Mila"),

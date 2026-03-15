@@ -2,6 +2,7 @@ use bevy::prelude::*;
 
 use crate::colony::{
     Astronaut, AstronautStatus, AstronautePromeneur, EtatPromenade, LifeSupportNetwork,
+    ProfilAstronaute,
 };
 use crate::construction::EtatConnexionPlacement;
 use crate::core::GameState;
@@ -104,11 +105,15 @@ pub(crate) fn formatter_connexion(etat: EtatConnexionPlacement) -> &'static str 
     }
 }
 
-pub(crate) fn carte_astronaut(astronaut: &Astronaut) -> CarteEquipageHud {
+pub(crate) fn carte_astronaut(
+    astronaut: &Astronaut,
+    profil: Option<&ProfilAstronaute>,
+) -> CarteEquipageHud {
     CarteEquipageHud {
         titre: astronaut.name.into(),
         detail: format!(
-            "{:>3.0}% O2 | {}{}",
+            "{} | {:>3.0}% O2 | {}{}",
+            libelle_role(profil),
             astronaut.suit_oxygen,
             libelle_statut_astronaute(astronaut.status),
             suffixe_charge_glace(astronaut.carrying_ice)
@@ -123,11 +128,15 @@ pub(crate) fn carte_astronaut(astronaut: &Astronaut) -> CarteEquipageHud {
     }
 }
 
-pub(crate) fn carte_promeneur(promeneur: &AstronautePromeneur) -> CarteEquipageHud {
+pub(crate) fn carte_promeneur(
+    promeneur: &AstronautePromeneur,
+    profil: Option<&ProfilAstronaute>,
+) -> CarteEquipageHud {
     CarteEquipageHud {
         titre: promeneur.nom.into(),
         detail: format!(
-            "{:>3.0}% O2 | {}",
+            "{} | {:>3.0}% O2 | {}",
+            libelle_role(profil),
             promeneur.air_combinaison,
             libelle_etat_promeneur(promeneur.etat)
         ),
@@ -144,10 +153,7 @@ pub(crate) fn trier_cartes(cartes: &mut [CarteEquipageHud]) {
     cartes.sort_by(|gauche, droite| gauche.titre.cmp(&droite.titre));
 }
 
-fn lignes_alertes(
-    primary: Option<&LifeSupportNetwork>,
-    reseaux_secondaires: usize,
-) -> Vec<String> {
+fn lignes_alertes(primary: Option<&LifeSupportNetwork>, reseaux_secondaires: usize) -> Vec<String> {
     let mut lignes = Vec::new();
 
     match primary {
@@ -196,18 +202,28 @@ fn libelle_etat_promeneur(etat: EtatPromenade) -> &'static str {
     }
 }
 
+fn libelle_role(profil: Option<&ProfilAstronaute>) -> &'static str {
+    profil
+        .map(|profil| profil.role.label())
+        .unwrap_or("indefini")
+}
+
 fn suffixe_charge_glace(charge: f32) -> String {
     if charge <= 0.0 {
         String::new()
-    } else {
+    } else if (charge - charge.round()).abs() < 0.05 {
         format!(" | +{:.0} glace", charge)
+    } else {
+        format!(" | +{charge:.1} glace")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::colony::{AstronautId, TaskId};
+    use crate::colony::{
+        AstronautId, ProfilAstronaute, ProfilCompetences, ProfilTraits, RoleAstronaute, TaskId,
+    };
 
     #[test]
     fn niveau_mission_detecte_une_situation_critique() {
@@ -247,10 +263,21 @@ mod tests {
             status: AstronautStatus::Working,
             carrying_ice: 3.0,
         };
+        let profil = ProfilAstronaute::new(
+            RoleAstronaute::Ingenieur,
+            ProfilCompetences::default(),
+            ProfilTraits::default(),
+        );
 
-        let carte = carte_astronaut(&astronaut);
+        let carte = carte_astronaut(&astronaut, Some(&profil));
         assert_eq!(carte.titre, "Ariane");
-        assert_eq!(carte.detail, " 84% O2 | au travail | +3 glace");
+        assert_eq!(carte.detail, "ingenieur |  84% O2 | au travail | +3 glace");
         assert_eq!(carte.accent, theme::COULEUR_ACCENT_OXYDE);
+    }
+
+    #[test]
+    fn suffixe_charge_glace_conserve_les_decimales_utiles() {
+        assert_eq!(suffixe_charge_glace(1.25), " | +1.2 glace");
+        assert_eq!(suffixe_charge_glace(2.0), " | +2 glace");
     }
 }

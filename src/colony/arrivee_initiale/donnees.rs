@@ -2,7 +2,9 @@ use std::f32::consts::PI;
 
 use bevy::prelude::*;
 
-use crate::colony::AstronautId;
+use crate::colony::{
+    AstronautId, ProfilAstronaute, ProfilCompetences, ProfilTraits, RoleAstronaute,
+};
 
 pub(super) const DUREE_APPROCHE: f32 = 2.7;
 pub(super) const DUREE_DESCENTE_FINALE: f32 = 2.4;
@@ -64,6 +66,7 @@ pub(crate) struct AstronauteDebarquement {
 pub(super) struct DonneeEquipageArrivee {
     pub id: AstronautId,
     pub nom: &'static str,
+    pub profil: ProfilAstronaute,
     pub position_finale: IVec2,
     pub delai_sortie: f32,
     pub decalage_sortie: Vec2,
@@ -73,6 +76,11 @@ pub(super) const EQUIPAGE_ARRIVEE: [DonneeEquipageArrivee; 3] = [
     DonneeEquipageArrivee {
         id: AstronautId(0),
         nom: "Ari",
+        profil: ProfilAstronaute::new(
+            RoleAstronaute::Commandant,
+            ProfilCompetences::new(1.0, 1.0, 0.95, 1.0, 1.0),
+            ProfilTraits::new(0.80, 0.90, 0.60, 0.55, 0.75),
+        ),
         position_finale: IVec2::new(1, -1),
         delai_sortie: 0.25,
         decalage_sortie: Vec2::new(-0.35, -0.55),
@@ -80,6 +88,11 @@ pub(super) const EQUIPAGE_ARRIVEE: [DonneeEquipageArrivee; 3] = [
     DonneeEquipageArrivee {
         id: AstronautId(1),
         nom: "Noor",
+        profil: ProfilAstronaute::new(
+            RoleAstronaute::Ingenieur,
+            ProfilCompetences::new(1.25, 1.0, 1.0, 0.95, 1.30),
+            ProfilTraits::new(0.72, 0.82, 0.48, 0.52, 0.80),
+        ),
         position_finale: IVec2::new(2, -1),
         delai_sortie: 0.68,
         decalage_sortie: Vec2::new(0.28, -0.65),
@@ -87,6 +100,11 @@ pub(super) const EQUIPAGE_ARRIVEE: [DonneeEquipageArrivee; 3] = [
     DonneeEquipageArrivee {
         id: AstronautId(2),
         nom: "Sora",
+        profil: ProfilAstronaute::new(
+            RoleAstronaute::Scientifique,
+            ProfilCompetences::new(0.95, 0.90, 1.10, 1.35, 0.90),
+            ProfilTraits::new(0.62, 0.66, 0.42, 0.95, 0.62),
+        ),
         position_finale: IVec2::new(-1, 1),
         delai_sortie: 1.18,
         decalage_sortie: Vec2::new(-0.10, 0.18),

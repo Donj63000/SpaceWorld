@@ -10,10 +10,9 @@ mod apparence;
 mod mouvement_lisse;
 mod rendu_realiste;
 
+pub use crate::colony::RoleAstronaute;
 pub use animation_realiste::{animer_rig_ouvriers, animer_rig_promeneurs};
-pub use apparence::{
-    ApparenceAstronaute, RoleAstronaute, TypeCombinaison, initialiser_apparences_astronautes,
-};
+pub use apparence::{ApparenceAstronaute, TypeCombinaison, initialiser_apparences_astronautes};
 pub use mouvement_lisse::{
     AnimationOuvrier, CibleMondeLisse, PositionMondeLisse, initialiser_ouvriers_lisses,
     interpoler_ouvriers, mettre_a_jour_cibles_ouvriers,
@@ -24,9 +23,10 @@ pub use rendu_realiste::{
 };
 
 use super::{
-    AstronautId, ColonyVisualAssets, LifeSupportState, LooseIce, StructureState, TaskBoard, TaskId,
-    WorkerSnapshot, add_loose_ice_at_cell, assign_available_tasks, cellules_occupees_structures,
-    cellules_origine_base, deposit_ice_in_network, find_structure_mut,
+    AstronautId, ColonyVisualAssets, LifeSupportState, LooseIce, ProfilAstronaute, StructureState,
+    TaskBoard, TaskId, WorkerSnapshot, add_loose_ice_at_cell, assign_available_tasks,
+    cellules_occupees_structures, cellules_origine_base, deposit_ice_in_network,
+    find_structure_mut, profil_astronaute_par_defaut, profil_promeneur_par_defaut,
     task_needs_missing_structure, trouver_chemin_vers_interaction,
 };
 use crate::core::WorldOrigin;
@@ -93,6 +93,11 @@ pub struct Astronaut {
     pub current_task: Option<TaskId>,
     pub status: AstronautStatus,
     pub carrying_ice: f32,
+}
+
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct MemoireTravailAstronaute {
+    pub credit_extraction: f32,
 }
 
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -169,6 +174,35 @@ impl ZoneRechargeBase {
         cellules.dedup();
         let index = cellules.iter().copied().collect();
         Self { cellules, index }
+    }
+}
+
+pub fn initialiser_profils_simulation_astronautes(
+    mut commands: Commands,
+    ouvriers: Query<(Entity, &Astronaut), Without<ProfilAstronaute>>,
+    promeneurs: Query<(Entity, &AstronautePromeneur), Without<ProfilAstronaute>>,
+) {
+    for (entity, astronaut) in &ouvriers {
+        commands
+            .entity(entity)
+            .insert(profil_astronaute_par_defaut(astronaut.id, astronaut.name));
+    }
+
+    for (entity, promeneur) in &promeneurs {
+        commands
+            .entity(entity)
+            .insert(profil_promeneur_par_defaut(promeneur.id, promeneur.nom));
+    }
+}
+
+pub fn initialiser_memoire_travail_astronautes(
+    mut commands: Commands,
+    ouvriers: Query<Entity, (With<Astronaut>, Without<MemoireTravailAstronaute>)>,
+) {
+    for entity in &ouvriers {
+        commands
+            .entity(entity)
+            .insert(MemoireTravailAstronaute::default());
     }
 }
 
@@ -817,23 +851,32 @@ pub fn animer_promeneur(
 
 pub fn assign_tasks_system(
     mut board: ResMut<TaskBoard>,
-    mut astronauts: Query<(&mut Astronaut, &GridPosition)>,
+    mut astronauts: Query<(&mut Astronaut, &GridPosition, Option<&ProfilAstronaute>)>,
 ) {
     let workers = astronauts
         .iter_mut()
-        .map(|(astronaut, position)| WorkerSnapshot {
-            id: astronaut.id,
-            position: position.0,
-            current_task: astronaut.current_task,
-            suit_oxygen: astronaut.suit_oxygen,
-            alive: astronaut.status != AstronautStatus::Dead,
+        .map(|(astronaut, position, profil)| {
+            let profil = profil
+                .copied()
+                .unwrap_or_else(|| profil_astronaute_par_defaut(astronaut.id, astronaut.name));
+            WorkerSnapshot {
+                id: astronaut.id,
+                position: position.0,
+                current_task: astronaut.current_task,
+                suit_oxygen: astronaut.suit_oxygen,
+                alive: astronaut.status != AstronautStatus::Dead,
+                role: profil.role,
+                build_speed: profil.competences.vitesse_construction,
+                haul_capacity: profil.competences.capacite_transport,
+                extraction_speed: profil.competences.vitesse_extraction,
+            }
         })
         .collect::<Vec<_>>();
 
     let assignments = assign_available_tasks(&mut board.tasks, &workers);
     let assignment_map: HashMap<_, _> = assignments.into_iter().collect();
 
-    for (mut astronaut, _) in &mut astronauts {
+    for (mut astronaut, _, _) in &mut astronauts {
         if astronaut.current_task.is_some() {
             continue;
         }
@@ -845,18 +888,16 @@ pub fn assign_tasks_system(
 
 fn abandonner_tache_en_cours(
     depots_glace_en_attente: &mut HashMap<IVec2, f32>,
+    memoire: &mut MemoireTravailAstronaute,
     astronaut: &mut Astronaut,
     position: IVec2,
 ) {
     if astronaut.carrying_ice > 0.0 {
-        accumuler_glace_libre_en_attente(
-            depots_glace_en_attente,
-            position,
-            astronaut.carrying_ice,
-        );
+        accumuler_glace_libre_en_attente(depots_glace_en_attente, position, astronaut.carrying_ice);
         astronaut.carrying_ice = 0.0;
     }
 
+    memoire.credit_extraction = 0.0;
     astronaut.current_task = None;
     astronaut.status = AstronautStatus::Idle;
 }
@@ -941,7 +982,13 @@ fn appliquer_depots_glace_en_attente(
 pub fn advance_astronauts(
     mut contexte: ContexteSimulationAstronautes,
     mut structures: ParamSet<(Query<&StructureState>, Query<&mut StructureState>)>,
-    mut astronauts: Query<(Entity, &mut Astronaut, &mut GridPosition)>,
+    mut astronauts: Query<(
+        Entity,
+        &mut Astronaut,
+        &mut GridPosition,
+        Option<&ProfilAstronaute>,
+        Option<&mut MemoireTravailAstronaute>,
+    )>,
     mut loose_ice_query: Query<(Entity, &mut LooseIce)>,
 ) {
     let structure_snapshots: Vec<_> = structures.p0().iter().cloned().collect();
@@ -954,8 +1001,20 @@ pub fn advance_astronauts(
     let _origines_base = cellules_origine_base(&contexte.zone_recharge);
     let mut depots_glace_en_attente = HashMap::new();
 
-    for (_, mut astronaut, mut position) in &mut astronauts {
+    for (_, mut astronaut, mut position, profil, mut memoire_option) in &mut astronauts {
+        let profil = profil
+            .copied()
+            .unwrap_or_else(|| profil_astronaute_par_defaut(astronaut.id, astronaut.name));
+        let mut memoire_locale = MemoireTravailAstronaute::default();
+        let memoire: &mut MemoireTravailAstronaute =
+            if let Some(memoire) = memoire_option.as_deref_mut() {
+                memoire
+            } else {
+                &mut memoire_locale
+            };
+
         if astronaut.status == AstronautStatus::Dead {
+            memoire.credit_extraction = 0.0;
             continue;
         }
 
@@ -969,6 +1028,7 @@ pub fn advance_astronauts(
                 );
                 astronaut.carrying_ice = 0.0;
             }
+            memoire.credit_extraction = 0.0;
             astronaut.status = AstronautStatus::Dead;
             astronaut.current_task = None;
             continue;
@@ -1015,6 +1075,7 @@ pub fn advance_astronauts(
 
         let Some(task_id) = astronaut.current_task else {
             astronaut.status = AstronautStatus::Idle;
+            memoire.credit_extraction = 0.0;
             recharger_automatiquement_en_air(
                 &mut astronaut,
                 position.0,
@@ -1032,14 +1093,20 @@ pub fn advance_astronauts(
             .find(|task| task.id == task_id)
             .cloned();
         let Some(task) = task else {
+            memoire.credit_extraction = 0.0;
             astronaut.current_task = None;
             astronaut.status = AstronautStatus::Idle;
             continue;
         };
 
+        if !matches!(task.kind, super::TaskKind::Extract { .. }) {
+            memoire.credit_extraction = 0.0;
+        }
+
         if task_needs_missing_structure(&task, astronaut.carrying_ice, &structure_positions) {
             abandonner_tache_en_cours(
                 &mut depots_glace_en_attente,
+                memoire,
                 &mut astronaut,
                 position.0,
             );
@@ -1086,6 +1153,7 @@ pub fn advance_astronauts(
         let Some(target_cell) = target_cell else {
             abandonner_tache_en_cours(
                 &mut depots_glace_en_attente,
+                memoire,
                 &mut astronaut,
                 position.0,
             );
@@ -1106,6 +1174,7 @@ pub fn advance_astronauts(
             ) else {
                 abandonner_tache_en_cours(
                     &mut depots_glace_en_attente,
+                    memoire,
                     &mut astronaut,
                     position.0,
                 );
@@ -1123,6 +1192,7 @@ pub fn advance_astronauts(
             ) else {
                 abandonner_tache_en_cours(
                     &mut depots_glace_en_attente,
+                    memoire,
                     &mut astronaut,
                     position.0,
                 );
@@ -1133,6 +1203,7 @@ pub fn advance_astronauts(
             if oxygene_necessaire > astronaut.suit_oxygen {
                 abandonner_tache_en_cours(
                     &mut depots_glace_en_attente,
+                    memoire,
                     &mut astronaut,
                     position.0,
                 );
@@ -1157,7 +1228,7 @@ pub fn advance_astronauts(
         match task.kind {
             super::TaskKind::Build { structure } => {
                 if let Some(mut state) = find_structure_mut(&mut structures.p1(), structure) {
-                    state.build_progress += 1.0 / state.kind.build_ticks();
+                    state.build_progress += progression_construction_par_tick(state.kind, &profil);
                     if state.build_progress >= 1.0 {
                         state.build_progress = 1.0;
                         state.built = true;
@@ -1168,18 +1239,28 @@ pub fn advance_astronauts(
                 }
             }
             super::TaskKind::Extract { cell } => {
-                let extracted =
-                    contexte
-                        .cache
-                        .extract_resource(cell, &contexte.profile, *contexte.seed, 1);
+                let quantite_voulue = quantite_extraction_prelevable(memoire, &profil);
+                if quantite_voulue == 0 {
+                    continue;
+                }
+                let extracted = contexte.cache.extract_resource(
+                    cell,
+                    &contexte.profile,
+                    *contexte.seed,
+                    quantite_voulue,
+                );
+                consommer_credit_extraction(memoire, extracted);
                 if extracted > 0 {
                     accumuler_glace_libre_en_attente(
                         &mut depots_glace_en_attente,
                         cell,
                         extracted as f32,
                     );
+                    astronaut.current_task = None;
+                } else {
+                    memoire.credit_extraction = 0.0;
+                    astronaut.current_task = None;
                 }
-                astronaut.current_task = None;
             }
             super::TaskKind::HaulIce {
                 source_cell,
@@ -1191,7 +1272,7 @@ pub fn advance_astronauts(
                         &mut loose_ice_query,
                         &mut depots_glace_en_attente,
                         source_cell,
-                        1.0,
+                        capacite_transport_glace(&profil),
                     );
                     if carried > 0.0 {
                         astronaut.carrying_ice = carried;
@@ -1219,9 +1300,10 @@ pub fn advance_astronauts(
             super::TaskKind::RefuelStructure { source: _, target } => {
                 if astronaut.carrying_ice <= 0.0 {
                     if let Some(primary) = contexte.life_support.primary.as_mut() {
-                        if primary.ice_stored >= 1.0 {
-                            primary.ice_stored -= 1.0;
-                            astronaut.carrying_ice = 1.0;
+                        let quantite = primary.ice_stored.min(capacite_transport_glace(&profil));
+                        if quantite > 0.0 {
+                            primary.ice_stored -= quantite;
+                            astronaut.carrying_ice = quantite;
                         } else {
                             astronaut.current_task = None;
                         }
@@ -1579,6 +1661,28 @@ fn cible_recharge_promeneur(
     zone_recharge.cellule_la_plus_proche(from)
 }
 
+fn progression_construction_par_tick(kind: super::StructureKind, profil: &ProfilAstronaute) -> f32 {
+    profil.competences.vitesse_construction.max(0.1) / kind.build_ticks().max(1.0)
+}
+
+fn capacite_transport_glace(profil: &ProfilAstronaute) -> f32 {
+    profil.competences.capacite_transport.max(0.25)
+}
+
+fn quantite_extraction_prelevable(
+    memoire: &mut MemoireTravailAstronaute,
+    profil: &ProfilAstronaute,
+) -> u16 {
+    memoire.credit_extraction = (memoire.credit_extraction
+        + profil.competences.vitesse_extraction.max(0.05))
+    .clamp(0.0, 32.0);
+    memoire.credit_extraction.floor() as u16
+}
+
+fn consommer_credit_extraction(memoire: &mut MemoireTravailAstronaute, quantite: u16) {
+    memoire.credit_extraction = (memoire.credit_extraction - quantite as f32).max(0.0);
+}
+
 fn cout_retour_promeneur(
     position_monde: Vec2,
     zone_recharge: &ZoneRechargeBase,
@@ -1785,7 +1889,10 @@ mod tests {
     use bevy::prelude::*;
 
     use super::*;
-    use crate::colony::{AstronautId, ColonyVisualAssets, StructureId, StructureKind};
+    use crate::colony::{
+        AstronautId, ColonyVisualAssets, ProfilAstronaute, ProfilCompetences, ProfilTraits,
+        RoleAstronaute, StructureId, StructureKind,
+    };
     use crate::world::PlanetProfile;
 
     fn structure_test(id: u32, kind: StructureKind, anchor: IVec2) -> StructureState {
@@ -1843,6 +1950,8 @@ mod tests {
         app.add_systems(
             Update,
             (
+                initialiser_profils_simulation_astronautes,
+                initialiser_memoire_travail_astronautes,
                 initialiser_apparences_astronautes,
                 initialiser_ouvriers_lisses,
                 greffer_rig_ouvriers,
@@ -2093,6 +2202,8 @@ mod tests {
         let astronaute = monde.entity(entite);
 
         assert!(astronaute.contains::<ApparenceAstronaute>());
+        assert!(astronaute.contains::<ProfilAstronaute>());
+        assert!(astronaute.contains::<MemoireTravailAstronaute>());
         assert!(astronaute.contains::<PositionMondeLisse>());
         assert!(astronaute.contains::<CibleMondeLisse>());
         assert!(astronaute.contains::<AnimationOuvrier>());
@@ -2131,9 +2242,27 @@ mod tests {
         let promeneur = monde.entity(entite);
 
         assert!(promeneur.contains::<ApparenceAstronaute>());
+        assert!(promeneur.contains::<ProfilAstronaute>());
         assert!(promeneur.contains::<RigAstronaute>());
         assert!(promeneur.contains::<Transform>());
         assert!(promeneur.contains::<GlobalTransform>());
         assert!(promeneur.contains::<Visibility>());
+    }
+
+    #[test]
+    fn lextraction_fractionnee_accumule_le_credit_des_competences() {
+        let profil = ProfilAstronaute::new(
+            RoleAstronaute::Scientifique,
+            ProfilCompetences::new(1.0, 1.0, 0.6, 1.0, 1.0),
+            ProfilTraits::new(0.5, 0.5, 0.5, 0.5, 0.5),
+        );
+        let mut memoire = MemoireTravailAstronaute::default();
+
+        assert_eq!(quantite_extraction_prelevable(&mut memoire, &profil), 0);
+        assert!((memoire.credit_extraction - 0.6).abs() < 0.001);
+
+        assert_eq!(quantite_extraction_prelevable(&mut memoire, &profil), 1);
+        consommer_credit_extraction(&mut memoire, 1);
+        assert!((memoire.credit_extraction - 0.2).abs() < 0.001);
     }
 }

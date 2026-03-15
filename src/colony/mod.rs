@@ -14,17 +14,24 @@ use crate::world::{
 
 mod arrivee_initiale;
 mod astronautes;
+mod definitions_structures;
 mod interactions_structures;
+mod profils;
 
 pub use astronautes::{
     AnimationPromenade, Astronaut, AstronautStatus, AstronautePromeneur, EtatPromenade,
     GridPosition, PositionMonde, ZoneRechargeBase,
 };
+pub use definitions_structures::{CycleExtraction, DefinitionStructure, definition_structure};
 pub use interactions_structures::{
     cellules_interaction_structure, cellules_occupees_structures, cellules_origine_base,
     meilleure_cellule_interaction, meilleure_cellule_interaction_structure,
     structure_rejoint_reseau_principal, structures_connectees_par_proximite,
     trouver_chemin_vers_interaction,
+};
+pub use profils::{
+    ProfilAstronaute, ProfilCompetences, ProfilTraits, RoleAstronaute,
+    profil_astronaute_par_defaut, profil_promeneur_par_defaut,
 };
 
 pub struct ColonyPlugin;
@@ -59,102 +66,53 @@ impl StructureKind {
     ];
 
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Lander => "Lander",
-            Self::Habitat => "Habitat",
-            Self::SolarArray => "Solar Array",
-            Self::OxygenExtractor => "O2 Extractor",
-            Self::Storage => "Storage",
-            Self::Tube => "Tube",
-        }
+        definition_structure(self).libelle
     }
 
     pub fn footprint(self) -> UVec2 {
-        match self {
-            Self::Lander | Self::Habitat | Self::SolarArray | Self::OxygenExtractor => {
-                UVec2::splat(2)
-            }
-            Self::Storage | Self::Tube => UVec2::splat(1),
-        }
+        definition_structure(self).emprise
     }
 
     pub fn build_ticks(self) -> f32 {
-        match self {
-            Self::Tube => 1.0,
-            Self::Storage => 2.0,
-            Self::SolarArray => 3.0,
-            Self::Habitat => 4.0,
-            Self::OxygenExtractor => 5.0,
-            Self::Lander => 6.0,
-        }
+        definition_structure(self).travail_construction
     }
 
     pub fn relay(self) -> bool {
-        true
+        definition_structure(self).relais_reseau
     }
 
     pub fn supports_life(self) -> bool {
-        matches!(self, Self::Lander | Self::Habitat)
+        definition_structure(self).support_vie
     }
 
     pub fn oxygen_capacity(self) -> f32 {
-        match self {
-            Self::Lander => 360.0,
-            Self::Habitat => 220.0,
-            _ => 0.0,
-        }
+        definition_structure(self).capacite_oxygene
     }
 
     pub fn ice_capacity(self) -> f32 {
-        match self {
-            Self::Lander => 8.0,
-            Self::Storage => 18.0,
-            _ => 0.0,
-        }
+        definition_structure(self).capacite_glace
     }
 
     pub fn energy_generation(self) -> f32 {
-        match self {
-            Self::SolarArray => 6.0,
-            _ => 0.0,
-        }
+        definition_structure(self).generation_energie
     }
 
     pub fn maintenance_energy(self) -> f32 {
-        match self {
-            Self::Habitat => 1.0,
-            Self::Lander => 0.5,
-            _ => 0.0,
-        }
+        definition_structure(self).maintenance_energie
     }
 
     pub fn extraction_cycle(self) -> Option<(f32, f32)> {
-        match self {
-            Self::OxygenExtractor => Some((2.0, 12.0)),
-            _ => None,
-        }
+        definition_structure(self)
+            .cycle_extraction
+            .map(CycleExtraction::en_tuple)
     }
 
     pub fn material_color(self) -> Color {
-        match self {
-            Self::Lander => Color::srgb(0.86, 0.83, 0.79),
-            Self::Habitat => Color::srgb(0.91, 0.92, 0.93),
-            Self::SolarArray => Color::srgb(0.20, 0.32, 0.58),
-            Self::OxygenExtractor => Color::srgb(0.84, 0.48, 0.22),
-            Self::Storage => Color::srgb(0.44, 0.47, 0.53),
-            Self::Tube => Color::srgb(0.78, 0.79, 0.82),
-        }
+        definition_structure(self).couleur_materiau
     }
 
     pub fn scale(self) -> Vec3 {
-        match self {
-            Self::Lander => Vec3::new(3.2, 1.7, 3.2),
-            Self::Habitat => Vec3::new(3.1, 1.4, 3.1),
-            Self::SolarArray => Vec3::new(3.3, 0.25, 3.3),
-            Self::OxygenExtractor => Vec3::new(2.8, 1.1, 2.8),
-            Self::Storage => Vec3::new(1.2, 0.9, 1.2),
-            Self::Tube => Vec3::new(1.4, 0.25, 1.4),
-        }
+        definition_structure(self).echelle_rendu
     }
 }
 
@@ -363,6 +321,8 @@ impl Plugin for ColonyPlugin {
             .add_systems(
                 Update,
                 (
+                    astronautes::initialiser_profils_simulation_astronautes,
+                    astronautes::initialiser_memoire_travail_astronautes,
                     astronautes::initialiser_apparences_astronautes,
                     astronautes::initialiser_ouvriers_lisses,
                     astronautes::greffer_rig_ouvriers,
@@ -418,10 +378,7 @@ impl Plugin for ColonyPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (
-                    fusionner_glace_libre_dupliquee,
-                    generate_tasks,
-                )
+                (fusionner_glace_libre_dupliquee, generate_tasks)
                     .chain()
                     .in_set(ColonySimulationSet::Tasks),
             )
@@ -1280,7 +1237,10 @@ fn fusionner_glace_libre_dupliquee(mut commands: Commands, loose_ice: Query<(Ent
             continue;
         }
 
-        commands.entity(garde).insert(LooseIce { cell, amount: total });
+        commands.entity(garde).insert(LooseIce {
+            cell,
+            amount: total,
+        });
         for entity in doublons {
             commands.entity(entity).despawn();
         }
@@ -1545,6 +1505,10 @@ pub struct WorkerSnapshot {
     pub current_task: Option<TaskId>,
     pub suit_oxygen: f32,
     pub alive: bool,
+    pub role: RoleAstronaute,
+    pub build_speed: f32,
+    pub haul_capacity: f32,
+    pub extraction_speed: f32,
 }
 
 pub fn assign_available_tasks(
@@ -1569,7 +1533,7 @@ pub fn assign_available_tasks(
                 continue;
             }
             let distance = (task.target_cell - worker.position).abs().element_sum();
-            let score = task.priority * 100 - distance;
+            let score = task.priority * 100 - distance + bonus_affectation(&worker, &task.kind);
             match best {
                 Some((_, best_score, best_distance))
                     if score < best_score || (score == best_score && distance >= best_distance) => {
@@ -1588,6 +1552,45 @@ pub fn assign_available_tasks(
     }
 
     assignments
+}
+
+fn bonus_affectation(worker: &WorkerSnapshot, task: &TaskKind) -> i32 {
+    bonus_role_pour_tache(worker.role, task)
+        + bonus_competence_pour_tache(
+            task,
+            worker.build_speed,
+            worker.haul_capacity,
+            worker.extraction_speed,
+        )
+}
+
+fn bonus_role_pour_tache(role: RoleAstronaute, task: &TaskKind) -> i32 {
+    match (role, task) {
+        (RoleAstronaute::Ingenieur, TaskKind::Build { .. }) => 18,
+        (RoleAstronaute::Ingenieur, TaskKind::RefuelStructure { .. }) => 10,
+        (RoleAstronaute::Scientifique, TaskKind::Extract { .. }) => 18,
+        (RoleAstronaute::Logisticien, TaskKind::HaulIce { .. }) => 18,
+        (RoleAstronaute::Logisticien, TaskKind::RefuelStructure { .. }) => 12,
+        (RoleAstronaute::Commandant, TaskKind::Build { .. }) => 12,
+        (RoleAstronaute::Commandant, TaskKind::ReturnToBase { .. }) => 4,
+        _ => 0,
+    }
+}
+
+fn bonus_competence_pour_tache(
+    task: &TaskKind,
+    build_speed: f32,
+    haul_capacity: f32,
+    extraction_speed: f32,
+) -> i32 {
+    match task {
+        TaskKind::Build { .. } => ((build_speed - 1.0) * 12.0).round() as i32,
+        TaskKind::Extract { .. } => ((extraction_speed - 1.0) * 12.0).round() as i32,
+        TaskKind::HaulIce { .. } | TaskKind::RefuelStructure { .. } => {
+            ((haul_capacity - 1.0) * 12.0).round() as i32
+        }
+        TaskKind::ReturnToBase { .. } => 0,
+    }
 }
 
 fn active_task_assignments(astronauts: &[Astronaut]) -> HashMap<TaskId, AstronautId> {
@@ -1719,6 +1722,10 @@ mod tests {
                 current_task: None,
                 suit_oxygen: 100.0,
                 alive: true,
+                role: RoleAstronaute::Ingenieur,
+                build_speed: 1.0,
+                haul_capacity: 1.0,
+                extraction_speed: 1.0,
             },
             WorkerSnapshot {
                 id: AstronautId(2),
@@ -1726,12 +1733,71 @@ mod tests {
                 current_task: None,
                 suit_oxygen: 100.0,
                 alive: true,
+                role: RoleAstronaute::Scientifique,
+                build_speed: 1.0,
+                haul_capacity: 1.0,
+                extraction_speed: 1.0,
             },
         ];
 
         let assignments = assign_available_tasks(&mut tasks, &workers);
         assert_eq!(assignments.len(), 2);
         assert_ne!(assignments[0].1, assignments[1].1);
+    }
+
+    #[test]
+    fn affectation_favorise_les_roles_appropries() {
+        let mut tasks = vec![
+            Task {
+                id: TaskId(1),
+                kind: TaskKind::Build {
+                    structure: StructureId(1),
+                },
+                priority: 100,
+                target_cell: IVec2::ZERO,
+                assigned_to: None,
+            },
+            Task {
+                id: TaskId(2),
+                kind: TaskKind::Extract {
+                    cell: IVec2::new(1, 0),
+                },
+                priority: 100,
+                target_cell: IVec2::new(1, 0),
+                assigned_to: None,
+            },
+        ];
+
+        let workers = vec![
+            WorkerSnapshot {
+                id: AstronautId(1),
+                position: IVec2::ZERO,
+                current_task: None,
+                suit_oxygen: 100.0,
+                alive: true,
+                role: RoleAstronaute::Ingenieur,
+                build_speed: 1.25,
+                haul_capacity: 1.0,
+                extraction_speed: 1.0,
+            },
+            WorkerSnapshot {
+                id: AstronautId(2),
+                position: IVec2::ZERO,
+                current_task: None,
+                suit_oxygen: 100.0,
+                alive: true,
+                role: RoleAstronaute::Scientifique,
+                build_speed: 1.0,
+                haul_capacity: 1.0,
+                extraction_speed: 1.35,
+            },
+        ];
+
+        let assignments = assign_available_tasks(&mut tasks, &workers);
+        let affectations: HashMap<_, _> = assignments.into_iter().collect();
+
+        assert_eq!(affectations.get(&AstronautId(1)), Some(&TaskId(1)));
+        assert_eq!(affectations.get(&AstronautId(2)), Some(&TaskId(2)));
     }
 
     #[test]
