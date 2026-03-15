@@ -1,0 +1,764 @@
+--- src/colony/arrivee_initiale/systemes.rs
++++ src/colony/arrivee_initiale/systemes.rs
+@@ -54,14 +54,14 @@
+     commands: Commands<'w, 's>,
+     next_state: ResMut<'w, NextState<GameState>>,
+     controller: ResMut<'w, CameraController>,
+-    camera_override: ResMut<'w, CameraOverride>,
++    camera_override: Option<ResMut<'w, CameraOverride>>,
+     clear_color: ResMut<'w, ClearColor>,
+     ambient: ResMut<'w, GlobalAmbientLight>,
+     cache: ResMut<'w, WorldCache>,
+     profile: Res<'w, PlanetProfile>,
+     seed: Res<'w, WorldSeed>,
+     origin: Res<'w, WorldOrigin>,
+-    sequence: ResMut<'w, SequenceArriveeInitiale>,
++    sequence: Option<ResMut<'w, SequenceArriveeInitiale>>,
+     lander_query:
+         Query<'w, 's, (&'static StructureState, &'static mut Transform), FiltreSansEffets>,
+     flames: Query<
+@@ -151,12 +151,14 @@
+         transform: Transform::default(),
+     });
+ 
+-    if transform.is_none() || global_transform.is_none() || visibility.is_none() {
+-        commands.entity(lander).insert((
+-            Transform::default(),
+-            GlobalTransform::default(),
+-            Visibility::default(),
+-        ));
++    if transform.is_none() {
++        commands.entity(lander).insert(Transform::default());
++    }
++    if global_transform.is_none() {
++        commands.entity(lander).insert(GlobalTransform::default());
++    }
++    if visibility.is_none() {
++        commands.entity(lander).insert(Visibility::default());
+     }
+ 
+     commands.entity(lander).with_children(|parent| {
+@@ -223,15 +225,24 @@
+     time: Res<Time>,
+     mut contexte: ContextePilotageArriveeInitiale,
+ ) {
+-    contexte.sequence.temps += time.delta_secs();
+-    let etat = etat_vaisseau(contexte.sequence.temps);
+-    let position_vaisseau = contexte.sequence.centre_monde + etat.decalage_monde;
+-    let focus_final = focus_camera_final(contexte.sequence.centre_monde);
++    let Some(mut sequence) = contexte.sequence.take() else {
++        contexte.next_state.set(GameState::InGame);
++        return;
++    };
++    let Some(mut camera_override) = contexte.camera_override.take() else {
++        contexte.next_state.set(GameState::InGame);
++        return;
++    };
++
++    sequence.temps += time.delta_secs();
++    let etat = etat_vaisseau(sequence.temps);
++    let position_vaisseau = sequence.centre_monde + etat.decalage_monde;
++    let focus_final = focus_camera_final(sequence.centre_monde);
+ 
+     contexte.controller.focus_world = focus_final;
+     contexte.controller.zoom = ZOOM_CAMERA_FINAL;
+ 
+-    if let Ok((_, mut transform)) = contexte.lander_query.get_mut(contexte.sequence.lander) {
++    if let Ok((_, mut transform)) = contexte.lander_query.get_mut(sequence.lander) {
+         transform.translation = continuous_world_to_render_translation(
+             position_vaisseau,
+             0.28 + etat.altitude,
+@@ -245,7 +256,7 @@
+     }
+ 
+     mettre_a_jour_effets_propulseurs(
+-        contexte.sequence.temps,
++        sequence.temps,
+         etat.altitude,
+         etat.intensite_propulseurs,
+         etat.intensite_poussiere,
+@@ -253,11 +264,11 @@
+         &mut contexte.poussieres,
+         &mut contexte.lumiere,
+     );
+-    contexte.camera_override.transform = construire_camera_cinematique(
+-        contexte.sequence.temps,
++    camera_override.transform = construire_camera_cinematique(
++        sequence.temps,
+         position_vaisseau,
+         etat.altitude,
+-        contexte.sequence.centre_monde,
++        sequence.centre_monde,
+         &focus_final,
+         &mut contexte.cache,
+         &contexte.profile,
+@@ -266,8 +277,7 @@
+     );
+ 
+     let progression_couleurs = ease_out_cubic(
+-        (contexte.sequence.temps / (duree_totale_intro() - DUREE_FONDU_FINAL * 0.35))
+-            .clamp(0.0, 1.0),
++        (sequence.temps / (duree_totale_intro() - DUREE_FONDU_FINAL * 0.35)).clamp(0.0, 1.0),
+     );
+     contexte.clear_color.0 =
+         melanger_couleurs(COULEUR_CIEL_INTRO, COULEUR_CIEL_JEU, progression_couleurs);
+@@ -279,15 +289,14 @@
+     contexte.ambient.brightness = LUMINOSITE_AMBIANTE_INTRO
+         + (LUMINOSITE_AMBIANTE_JEU - LUMINOSITE_AMBIANTE_INTRO) * progression_couleurs;
+ 
+-    while contexte.sequence.equipage_deploie < EQUIPAGE_ARRIVEE.len() {
+-        let data = EQUIPAGE_ARRIVEE[contexte.sequence.equipage_deploie];
+-        if temps_sortie_equipage(contexte.sequence.temps) < data.delai_sortie {
++    while sequence.equipage_deploie < EQUIPAGE_ARRIVEE.len() {
++        let data = EQUIPAGE_ARRIVEE[sequence.equipage_deploie];
++        if temps_sortie_equipage(sequence.temps) < data.delai_sortie {
+             break;
+         }
+ 
+-        let cible_monde =
+-            footprint_center(&[data.position_finale], contexte.profile.cell_size_meters);
+-        let origine_monde = contexte.sequence.point_sortie + data.decalage_sortie;
++        let cible_monde = footprint_center(&[data.position_finale], contexte.profile.cell_size_meters);
++        let origine_monde = sequence.point_sortie + data.decalage_sortie;
+         let orientation = (cible_monde - origine_monde)
+             .x
+             .atan2((cible_monde - origine_monde).y);
+@@ -311,10 +320,10 @@
+             AstronauteDebarquement { cible: cible_monde },
+             Name::new(format!("Astronaute {}", data.nom)),
+         ));
+-        contexte.sequence.equipage_deploie += 1;
+-    }
+-
+-    if !contexte.sequence.mila_creee && contexte.sequence.temps >= duree_totale_intro() - 0.95 {
++        sequence.equipage_deploie += 1;
++    }
++
++    if !sequence.mila_creee && sequence.temps >= duree_totale_intro() - 0.95 {
+         contexte.commands.spawn((
+             AstronautePromeneur {
+                 id: super::super::AstronautId(10),
+@@ -325,15 +334,15 @@
+                 compteur_promenade: 0,
+                 pause_restante: 0.0,
+             },
+-            PositionMonde(contexte.sequence.position_mila),
++            PositionMonde(sequence.position_mila),
+             AnimationPromenade::default(),
+             Name::new("Astronaute Mila"),
+         ));
+-        contexte.sequence.mila_creee = true;
+-    }
+-
+-    if contexte.sequence.temps >= duree_totale_intro()
+-        && contexte.sequence.equipage_deploie == EQUIPAGE_ARRIVEE.len()
++        sequence.mila_creee = true;
++    }
++
++    if sequence.temps >= duree_totale_intro()
++        && sequence.equipage_deploie == EQUIPAGE_ARRIVEE.len()
+         && contexte.debarquements.is_empty()
+     {
+         contexte.next_state.set(GameState::InGame);
+--- src/colony/astronautes/mod.rs
++++ src/colony/astronautes/mod.rs
+@@ -844,18 +844,98 @@
+ }
+ 
+ fn abandonner_tache_en_cours(
+-    commands: &mut Commands,
+-    loose_ice_query: &mut Query<(Entity, &mut LooseIce)>,
++    depots_glace_en_attente: &mut HashMap<IVec2, f32>,
+     astronaut: &mut Astronaut,
+     position: IVec2,
+ ) {
+     if astronaut.carrying_ice > 0.0 {
+-        add_loose_ice_at_cell(commands, loose_ice_query, position, astronaut.carrying_ice);
++        accumuler_glace_libre_en_attente(
++            depots_glace_en_attente,
++            position,
++            astronaut.carrying_ice,
++        );
+         astronaut.carrying_ice = 0.0;
+     }
+ 
+     astronaut.current_task = None;
+     astronaut.status = AstronautStatus::Idle;
++}
++
++fn accumuler_glace_libre_en_attente(
++    depots_glace_en_attente: &mut HashMap<IVec2, f32>,
++    cell: IVec2,
++    amount: f32,
++) {
++    if amount <= 0.0 {
++        return;
++    }
++
++    *depots_glace_en_attente.entry(cell).or_insert(0.0) += amount;
++}
++
++fn prelever_glace_libre(
++    commands: &mut Commands,
++    loose_ice_query: &mut Query<(Entity, &mut LooseIce)>,
++    depots_glace_en_attente: &mut HashMap<IVec2, f32>,
++    cell: IVec2,
++    requested: f32,
++) -> f32 {
++    if requested <= 0.0 {
++        return 0.0;
++    }
++
++    let mut restant = requested;
++    let mut preleve = 0.0;
++    let mut a_supprimer = Vec::new();
++
++    for (ice_entity, mut loose) in loose_ice_query
++        .iter_mut()
++        .filter(|(_, loose)| loose.cell == cell && loose.amount > 0.0)
++    {
++        if restant <= 0.0 {
++            break;
++        }
++
++        let pris = loose.amount.min(restant);
++        loose.amount -= pris;
++        preleve += pris;
++        restant -= pris;
++
++        if loose.amount <= 0.0 {
++            a_supprimer.push(ice_entity);
++        }
++    }
++
++    for entity in a_supprimer {
++        commands.entity(entity).despawn();
++    }
++
++    if restant > 0.0 {
++        let mut supprimer_entree = false;
++        if let Some(disponible) = depots_glace_en_attente.get_mut(&cell) {
++            let pris = (*disponible).min(restant);
++            *disponible -= pris;
++            preleve += pris;
++            restant -= pris;
++            supprimer_entree = *disponible <= 0.0;
++        }
++        if supprimer_entree {
++            depots_glace_en_attente.remove(&cell);
++        }
++    }
++
++    let _ = restant;
++    preleve
++}
++
++fn appliquer_depots_glace_en_attente(
++    commands: &mut Commands,
++    loose_ice_query: &mut Query<(Entity, &mut LooseIce)>,
++    depots_glace_en_attente: HashMap<IVec2, f32>,
++) {
++    for (cell, amount) in depots_glace_en_attente {
++        add_loose_ice_at_cell(commands, loose_ice_query, cell, amount);
++    }
+ }
+ 
+ pub fn advance_astronauts(
+@@ -872,6 +952,7 @@
+     let cellules_occupees = cellules_occupees_structures(&structure_snapshots);
+     let limite_navigation = autonomie_aller_retour_max_cases() + 128;
+     let _origines_base = cellules_origine_base(&contexte.zone_recharge);
++    let mut depots_glace_en_attente = HashMap::new();
+ 
+     for (_, mut astronaut, mut position) in &mut astronauts {
+         if astronaut.status == AstronautStatus::Dead {
+@@ -881,9 +962,8 @@
+         astronaut.suit_oxygen = (astronaut.suit_oxygen - CONSOMMATION_AIR_PAR_TICK).max(0.0);
+         if astronaut.suit_oxygen <= 0.0 {
+             if astronaut.carrying_ice > 0.0 {
+-                add_loose_ice_at_cell(
+-                    &mut contexte.commands,
+-                    &mut loose_ice_query,
++                accumuler_glace_libre_en_attente(
++                    &mut depots_glace_en_attente,
+                     position.0,
+                     astronaut.carrying_ice,
+                 );
+@@ -959,8 +1039,7 @@
+ 
+         if task_needs_missing_structure(&task, astronaut.carrying_ice, &structure_positions) {
+             abandonner_tache_en_cours(
+-                &mut contexte.commands,
+-                &mut loose_ice_query,
++                &mut depots_glace_en_attente,
+                 &mut astronaut,
+                 position.0,
+             );
+@@ -1006,8 +1085,7 @@
+         };
+         let Some(target_cell) = target_cell else {
+             abandonner_tache_en_cours(
+-                &mut contexte.commands,
+-                &mut loose_ice_query,
++                &mut depots_glace_en_attente,
+                 &mut astronaut,
+                 position.0,
+             );
+@@ -1027,8 +1105,7 @@
+                 },
+             ) else {
+                 abandonner_tache_en_cours(
+-                    &mut contexte.commands,
+-                    &mut loose_ice_query,
++                    &mut depots_glace_en_attente,
+                     &mut astronaut,
+                     position.0,
+                 );
+@@ -1045,8 +1122,7 @@
+                 },
+             ) else {
+                 abandonner_tache_en_cours(
+-                    &mut contexte.commands,
+-                    &mut loose_ice_query,
++                    &mut depots_glace_en_attente,
+                     &mut astronaut,
+                     position.0,
+                 );
+@@ -1056,8 +1132,7 @@
+             let oxygene_necessaire = chemin.cout as f32 * CONSOMMATION_AIR_PAR_TICK + cout_retour;
+             if oxygene_necessaire > astronaut.suit_oxygen {
+                 abandonner_tache_en_cours(
+-                    &mut contexte.commands,
+-                    &mut loose_ice_query,
++                    &mut depots_glace_en_attente,
+                     &mut astronaut,
+                     position.0,
+                 );
+@@ -1098,9 +1173,8 @@
+                         .cache
+                         .extract_resource(cell, &contexte.profile, *contexte.seed, 1);
+                 if extracted > 0 {
+-                    add_loose_ice_at_cell(
+-                        &mut contexte.commands,
+-                        &mut loose_ice_query,
++                    accumuler_glace_libre_en_attente(
++                        &mut depots_glace_en_attente,
+                         cell,
+                         extracted as f32,
+                     );
+@@ -1112,9 +1186,10 @@
+                 target: _,
+             } => {
+                 if astronaut.carrying_ice <= 0.0 {
+-                    let carried = take_loose_ice_from_cell(
++                    let carried = prelever_glace_libre(
+                         &mut contexte.commands,
+                         &mut loose_ice_query,
++                        &mut depots_glace_en_attente,
+                         source_cell,
+                         1.0,
+                     );
+@@ -1130,9 +1205,8 @@
+                     }
+ 
+                     if astronaut.carrying_ice > 0.0 {
+-                        add_loose_ice_at_cell(
+-                            &mut contexte.commands,
+-                            &mut loose_ice_query,
++                        accumuler_glace_libre_en_attente(
++                            &mut depots_glace_en_attente,
+                             position.0,
+                             astronaut.carrying_ice,
+                         );
+@@ -1156,9 +1230,8 @@
+                     if let Some(mut state) = find_structure_mut(&mut structures.p1(), target) {
+                         state.internal_ice += astronaut.carrying_ice;
+                     } else {
+-                        add_loose_ice_at_cell(
+-                            &mut contexte.commands,
+-                            &mut loose_ice_query,
++                        accumuler_glace_libre_en_attente(
++                            &mut depots_glace_en_attente,
+                             position.0,
+                             astronaut.carrying_ice,
+                         );
+@@ -1183,6 +1256,12 @@
+             astronaut.status = AstronautStatus::Idle;
+         }
+     }
++
++    appliquer_depots_glace_en_attente(
++        &mut contexte.commands,
++        &mut loose_ice_query,
++        depots_glace_en_attente,
++    );
+ }
+ 
+ pub fn simuler_promeneur(
+--- src/colony/mod.rs
++++ src/colony/mod.rs
+@@ -418,7 +418,12 @@
+             )
+             .add_systems(
+                 FixedUpdate,
+-                generate_tasks.in_set(ColonySimulationSet::Tasks),
++                (
++                    fusionner_glace_libre_dupliquee,
++                    generate_tasks,
++                )
++                    .chain()
++                    .in_set(ColonySimulationSet::Tasks),
+             )
+             .add_systems(
+                 FixedUpdate,
+@@ -1257,6 +1262,31 @@
+     query.iter_mut().find(|structure| structure.id == id)
+ }
+ 
++fn fusionner_glace_libre_dupliquee(mut commands: Commands, loose_ice: Query<(Entity, &LooseIce)>) {
++    let mut cellules = HashMap::<IVec2, (Entity, f32, Vec<Entity>)>::new();
++
++    for (entity, glace) in &loose_ice {
++        let entry = cellules
++            .entry(glace.cell)
++            .or_insert((entity, 0.0, Vec::new()));
++        if entry.0 != entity {
++            entry.2.push(entity);
++        }
++        entry.1 += glace.amount;
++    }
++
++    for (cell, (garde, total, doublons)) in cellules {
++        if doublons.is_empty() {
++            continue;
++        }
++
++        commands.entity(garde).insert(LooseIce { cell, amount: total });
++        for entity in doublons {
++            commands.entity(entity).despawn();
++        }
++    }
++}
++
+ fn add_loose_ice_at_cell(
+     commands: &mut Commands,
+     loose_ice_query: &mut Query<(Entity, &mut LooseIce)>,
+@@ -1269,7 +1299,7 @@
+ 
+     if let Some((_, mut loose)) = loose_ice_query
+         .iter_mut()
+-        .find(|(_, loose)| loose.cell == cell)
++        .find(|(_, loose)| loose.cell == cell && loose.amount > 0.0)
+     {
+         loose.amount += amount;
+     } else {
+@@ -1778,6 +1808,29 @@
+     }
+ 
+     #[test]
++    fn fusion_de_glace_libre_regroupe_les_doublons() {
++        let mut app = App::new();
++        app.add_systems(Update, fusionner_glace_libre_dupliquee);
++
++        let cell = IVec2::new(2, 3);
++        app.world_mut().spawn(LooseIce { cell, amount: 1.5 });
++        app.world_mut().spawn(LooseIce { cell, amount: 0.75 });
++
++        app.update();
++
++        let world = app.world_mut();
++        let mut query = world.query::<&LooseIce>();
++        let glaces: Vec<_> = query
++            .iter(world)
++            .map(|glace| (glace.cell, glace.amount))
++            .collect();
++
++        assert_eq!(glaces.len(), 1);
++        assert_eq!(glaces[0].0, cell);
++        assert!((glaces[0].1 - 2.25).abs() < 0.001);
++    }
++
++    #[test]
+     fn active_task_assignments_ignore_dead_astronauts() {
+         let astronauts = vec![
+             Astronaut {
+--- src/core/performance.rs
++++ src/core/performance.rs
+@@ -145,9 +145,9 @@
+     overlay: Res<OverlayDiagnosticPerformance>,
+     mut textes: Query<&mut Text>,
+ ) {
+-    let mut texte = textes
+-        .get_mut(overlay.texte)
+-        .expect("le texte de diagnostic doit exister");
++    let Ok(mut texte) = textes.get_mut(overlay.texte) else {
++        return;
++    };
+     let fps = diagnostics
+         .get(&FrameTimeDiagnosticsPlugin::FPS)
+         .and_then(|entry| entry.smoothed())
+--- src/ui/mod.rs
++++ src/ui/mod.rs
+@@ -650,30 +650,30 @@
+ }
+ 
+ fn remplacer_texte(query: &mut Query<&mut Text>, entite: Entity, valeur: impl Into<String>) {
+-    let mut texte = query
+-        .get_mut(entite)
+-        .unwrap_or_else(|_| panic!("Texte HUD introuvable: {:?}", entite));
++    let Ok(mut texte) = query.get_mut(entite) else {
++        return;
++    };
+     *texte = valeur.into().into();
+ }
+ 
+ fn remplacer_fond(query: &mut Query<&mut BackgroundColor>, entite: Entity, couleur: Color) {
+-    let mut fond = query
+-        .get_mut(entite)
+-        .unwrap_or_else(|_| panic!("Fond HUD introuvable: {:?}", entite));
++    let Ok(mut fond) = query.get_mut(entite) else {
++        return;
++    };
+     *fond = BackgroundColor(couleur);
+ }
+ 
+ fn remplacer_couleur_texte(query: &mut Query<&mut TextColor>, entite: Entity, couleur: Color) {
+-    let mut texte = query
+-        .get_mut(entite)
+-        .unwrap_or_else(|_| panic!("Couleur de texte HUD introuvable: {:?}", entite));
++    let Ok(mut texte) = query.get_mut(entite) else {
++        return;
++    };
+     texte.0 = couleur;
+ }
+ 
+ fn remplacer_largeur_barre(query: &mut Query<&mut Node>, entite: Entity, ratio: f32) {
+-    let mut noeud = query
+-        .get_mut(entite)
+-        .unwrap_or_else(|_| panic!("Barre HUD introuvable: {:?}", entite));
++    let Ok(mut noeud) = query.get_mut(entite) else {
++        return;
++    };
+     noeud.width = percent(100.0 * ratio);
+ }
+ 
+--- src/world/streaming_chunks.rs
++++ src/world/streaming_chunks.rs
+@@ -1,4 +1,4 @@
+-use std::collections::HashMap;
++use std::collections::{HashMap, VecDeque};
+ 
+ use bevy::ecs::system::SystemParam;
+ use bevy::prelude::*;
+@@ -134,14 +134,6 @@
+     let required_coords = coordonnees_chunks_requises(centre, contexte.perf.rayon_chunks_actifs);
+     let required_set = required_coords.iter().copied().collect();
+ 
+-    if contexte.active_chunks.center == Some(centre)
+-        && contexte.active_chunks.set == required_set
+-        && contexte.file.terrains.is_empty()
+-        && contexte.file.decors.is_empty()
+-    {
+-        return;
+-    }
+-
+     for coord in contexte
+         .active_chunks
+         .set
+@@ -161,26 +153,49 @@
+         }
+     }
+ 
+-    let nouveaux_chunks = required_coords
+-        .iter()
+-        .copied()
+-        .filter(|coord| !contexte.active_chunks.set.contains(coord))
+-        .collect();
+-
+     contexte.file.centre_planifie = Some(centre);
+     contexte.file.coords_requis = required_coords.clone();
+     contexte.file.ensemble_requis = required_set.clone();
+-    contexte.file.terrains = nouveaux_chunks;
+-    contexte.file.decors = contexte
+-        .file
+-        .decors
+-        .drain(..)
+-        .filter(|coord| required_set.contains(coord))
+-        .collect();
++    contexte.file.terrains = reconstruire_file_terrains_requise(&required_coords, &contexte.visuals);
++    contexte.file.decors = reconstruire_file_decors_requise(&required_coords, &contexte.visuals);
+ 
+     contexte.active_chunks.center = Some(centre);
+     contexte.active_chunks.coords = required_coords;
+     contexte.active_chunks.set = required_set;
++}
++
++fn reconstruire_file_terrains_requise(
++    required_coords: &[ChunkCoord],
++    visuals: &ChunkVisuals,
++) -> VecDeque<ChunkCoord> {
++    required_coords
++        .iter()
++        .copied()
++        .filter(|coord| {
++            visuals
++                .entries
++                .get(coord)
++                .and_then(|entry| entry.terrain_entity)
++                .is_none()
++        })
++        .collect()
++}
++
++fn reconstruire_file_decors_requise(
++    required_coords: &[ChunkCoord],
++    visuals: &ChunkVisuals,
++) -> VecDeque<ChunkCoord> {
++    required_coords
++        .iter()
++        .copied()
++        .filter(|coord| {
++            visuals
++                .entries
++                .get(coord)
++                .map(|entry| entry.terrain_entity.is_some() && !entry.decors_initialises)
++                .unwrap_or(false)
++        })
++        .collect()
+ }
+ 
+ pub(crate) fn traiter_streaming_chunks(mut contexte: ContexteTraitementStreaming) {
+@@ -405,7 +420,7 @@
+ 
+     #[test]
+     fn le_budget_de_streaming_preleve_un_chunk_par_frame() {
+-        let mut file = std::collections::VecDeque::from(vec![
++        let mut file = VecDeque::from(vec![
+             ChunkCoord { x: 0, y: 0 },
+             ChunkCoord { x: 1, y: 0 },
+             ChunkCoord { x: 2, y: 0 },
+@@ -416,9 +431,66 @@
+ 
+         assert_eq!(premier, vec![ChunkCoord { x: 0, y: 0 }]);
+         assert_eq!(second, vec![ChunkCoord { x: 1, y: 0 }]);
++        assert_eq!(file, VecDeque::from(vec![ChunkCoord { x: 2, y: 0 }]));
++    }
++
++    #[test]
++    fn la_file_des_terrains_reste_complete_tant_que_des_chunks_manquent() {
++        let coords = vec![
++            ChunkCoord { x: 0, y: 0 },
++            ChunkCoord { x: 1, y: 0 },
++            ChunkCoord { x: 0, y: 1 },
++        ];
++        let mut visuals = ChunkVisuals::default();
++        visuals.entries.insert(
++            ChunkCoord { x: 0, y: 0 },
++            ChunkVisualEntry {
++                terrain_entity: Some(Entity::from_bits(1)),
++                ..default()
++            },
++        );
++
++        let file = reconstruire_file_terrains_requise(&coords, &visuals);
+         assert_eq!(
+             file,
+-            std::collections::VecDeque::from(vec![ChunkCoord { x: 2, y: 0 }])
++            VecDeque::from(vec![ChunkCoord { x: 1, y: 0 }, ChunkCoord { x: 0, y: 1 }])
+         );
+     }
+-}
++
++    #[test]
++    fn la_file_des_decors_ne_contient_que_les_chunks_terrain_deja_charges() {
++        let coords = vec![
++            ChunkCoord { x: 0, y: 0 },
++            ChunkCoord { x: 1, y: 0 },
++            ChunkCoord { x: 0, y: 1 },
++        ];
++        let mut visuals = ChunkVisuals::default();
++        visuals.entries.insert(
++            ChunkCoord { x: 0, y: 0 },
++            ChunkVisualEntry {
++                terrain_entity: Some(Entity::from_bits(1)),
++                decors_initialises: true,
++                ..default()
++            },
++        );
++        visuals.entries.insert(
++            ChunkCoord { x: 1, y: 0 },
++            ChunkVisualEntry {
++                terrain_entity: Some(Entity::from_bits(2)),
++                decors_initialises: false,
++                ..default()
++            },
++        );
++        visuals.entries.insert(
++            ChunkCoord { x: 0, y: 1 },
++            ChunkVisualEntry {
++                terrain_entity: None,
++                decors_initialises: false,
++                ..default()
++            },
++        );
++
++        let file = reconstruire_file_decors_requise(&coords, &visuals);
++        assert_eq!(file, VecDeque::from(vec![ChunkCoord { x: 1, y: 0 }]));
++    }
++}
+--- src/world/survol_terrain.rs
++++ src/world/survol_terrain.rs
+@@ -113,6 +113,13 @@
+     let camera_a_change = etat.derniere_camera_translation != Some(translation_camera)
+         || etat.derniere_camera_rotation != Some(rotation_camera);
+     let origine_a_change = etat.derniere_origine != origine;
++    let presence_curseur_a_change = etat.dernier_curseur.is_some() != cursor_position.is_some();
++    let premier_echantillon =
++        etat.derniere_camera_translation.is_none() || etat.derniere_camera_rotation.is_none();
++
++    if cursor_position.is_some() && (presence_curseur_a_change || premier_echantillon) {
++        return true;
++    }
+ 
+     (cursor_a_change || camera_a_change || origine_a_change) && temps >= etat.prochain_raycast_a
+ }
+@@ -258,4 +265,38 @@
+             12.0,
+         ));
+     }
+-}
++
++    #[test]
++    fn le_survol_est_recalcule_des_que_le_curseur_revient() {
++        let etat = EtatSurvolTerrain {
++            dernier_curseur: None,
++            derniere_camera_translation: Some(Vec3::new(1.0, 2.0, 3.0)),
++            derniere_camera_rotation: Some(Quat::IDENTITY),
++            derniere_origine: Vec2::new(4.0, -2.0),
++            prochain_raycast_a: 10.0,
++        };
++
++        assert!(survol_doit_etre_recalcule(
++            &etat,
++            Some(Vec2::new(100.0, 80.0)),
++            Vec3::new(1.0, 2.0, 3.0),
++            Quat::IDENTITY,
++            Vec2::new(4.0, -2.0),
++            5.0,
++        ));
++    }
++
++    #[test]
++    fn le_premier_survol_ne_subit_pas_la_cadence() {
++        let etat = EtatSurvolTerrain::default();
++
++        assert!(survol_doit_etre_recalcule(
++            &etat,
++            Some(Vec2::new(12.0, 18.0)),
++            Vec3::new(1.0, 2.0, 3.0),
++            Quat::IDENTITY,
++            Vec2::ZERO,
++            0.0,
++        ));
++    }
++}
